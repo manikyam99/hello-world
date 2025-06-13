@@ -1,1 +1,814 @@
-Updating some text
+import datetime
+import os
+import json, time
+import pandas as pd
+import matplotlib, logging
+#import matplotlib.pylab as plt
+
+#import bots.search_query
+from PortalServices.search_query import SearchQuery
+from PortalServices.graph_creator import create_graph, create_data_URI
+
+from typing import List
+#from PortalServices.splunk_operations import SplunkOperations
+from PortalServices.utils import Utils
+from PortalServices.serviceNow import ServiceNowOperations
+from PortalServices.autoCloserservice import AutoCloserOperations
+from config import DefaultConfig
+utils = Utils()
+#splunk = SplunkOperations()
+sq = SearchQuery()
+sericenow = ServiceNowOperations()
+autoCloser = AutoCloserOperations()
+CONFIG = DefaultConfig()
+
+summaryPoints = []
+resultResponse = []
+dataPoints = {}
+splunkLog = []
+earlist_time = '-1h'
+latest_time = 'now'
+
+logger = logging.getLogger(__name__)
+
+def getServiceNowIncidents():
+    #result = []
+    #summaryPoints.clear()
+    splunkLog.clear()
+    #dataPoints.clear()
+    #worknotes = createServiceNowIncident()
+    #time.sleep(30)
+    try :
+        serResponse = sericenow.readServiceNowDataByGroup()
+    except Exception as e:
+        logger.exception("Exception occurred while connecting to service now : %s", str(e))
+        splunkLog.append({"time":time.asctime(),"ERROR":"Exception occurred while connecting to service now","Exception":str(e)})
+        sq.pushLogsToSplunkIndex(json.dumps(splunkLog))
+    try :
+        servSummary = utils.getServiceNowSummary()
+    except Exception as e:
+        logger.exception("Exception occurred while reading the servicenow_mapping.csv file : %s", str(e))
+        splunkLog.append({"time":str(time.asctime()),"ERROR":"Exception occurred while reading the servicenow_mapping.csv file"})
+        sq.pushLogsToSplunkIndex(json.dumps(splunkLog))
+
+    logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+    #dataPoints.clear()
+    #sq.pushLogsToSplunkIndex(json.dumps(splunkLog))
+
+    dataPoints = {}
+    #dataPoints['Time'] = time.asctime()
+    dataPoints['INFO'] = "Application is up and running"
+    dataPoints['Environment'] = CONFIG.ENV
+    splunkLog.append(dataPoints)
+    #logger.info("ServiceNow Response : {}".format(serResponse))
+    if not serResponse :
+        dataPoints = {}
+        dataPoints['Environment'] = CONFIG.ENV
+        dataPoints['ServiceNowDetails'] = "There were no active service now tickets created for last 10mins"
+        splunkLog.append(dataPoints)
+        #sq.pushLogsToSplunkIndex(json.dumps(splunkLog))
+    logger.info("splunkLog : {}".format(splunkLog))
+    sq.pushLogsToSplunkIndex(json.dumps(splunkLog))
+
+    for item in serResponse:
+        for row in range(len(servSummary))  :
+            if (servSummary.iloc[row]['description'] in item['short_description'] ) :
+                #print("Matched",servSummary.iloc[row]['platforms'])
+                logger.info("Incident Number : {}, summary : {}, CallType : {}".format(item['number'],item['short_description'],item['subcategory']))
+                splunkLog.clear()
+                dataPoints = {}
+                dataPoints['Details'] = "Service now incidents picked for last 10mins"
+                dataPoints['Number'] = item['number']
+                dataPoints['summary'] = item['short_description']
+                dataPoints['subcategory'] = item['subcategory']
+                dataPoints['Environment'] = CONFIG.ENV
+                splunkLog.append(dataPoints)
+                logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+                if str(servSummary.iloc[row]['is_autoStats']).lower() == 'true' :
+                    logger.info("Auto Stats : {}".format(servSummary.iloc[row]['is_autoStats']))
+                    get_sitoutage_result(item['subcategory'],servSummary.iloc[row]['platforms'],item['sys_id'],item['number'],item['short_description'],str(servSummary.iloc[row]['is_auto_analysis']).lower(),str(servSummary.iloc[row]['is_autoCloser']).lower())
+                
+                '''if str(servSummary.iloc[row]['is_autoCloser']).lower() == 'true' :
+                    autoCloser.autoCloserIncidents(item['subcategory'],servSummary.iloc[row]['platforms'],item['sys_id'],item['number'],item['short_description'])'''
+                '''splunkLog.append({"time":time.asctime(),"INFO":"Testing"})
+                logger.info("splunkLog : {}".format(splunkLog))
+                sq.pushLogsToSplunkIndex(json.dumps(splunkLog))'''
+
+
+def get_sitoutage_result(call_type,action,sysId,incident,short_description,is_auto_analysis,is_autoCloser):
+    #result = []
+    #msgResult = []
+    resultResponse.clear()
+    timeperiod = '-1h'
+    span_value = '5m'
+    summaryPoints.clear()
+    path = utils.getRequestPath(call_type)
+    is_graph_search = 'search'
+    #print("New Path",path)
+
+    search_array = utils.getSplunkQueryByPlatfrom(action)
+    print("Action  ",action)
+    print("Data from Sheet",search_array)
+    search_value = ''
+    analysisTitle = 'Please find the SRE Ops Bot Analysis'
+    analysisFileName = 'SRE_Ops_Bot_Analysis'
+    result = {}
+    #is_graph_search = 'search'
+    result = {'Issues Overview': [], 'Analysis Details': []}
+    result['Issues Overview'] = result['Issues Overview']+['Issue Name']
+    result['Analysis Details'] = result['Analysis Details']+[short_description]
+    result['Issues Overview'] = result['Issues Overview']+['Impacted Sites']
+    result['Analysis Details'] = result['Analysis Details']+[call_type]
+    for row in range(len(search_array))  :
+        #print("Row data==========",search_array.iloc[row])
+        if str(search_array.iloc[row]['timeperiod']) == '-15.0' or str(search_array.iloc[row]['timeperiod']) == '-15' :
+            timeperiod ='-15m'
+            span_value = '1m'
+            earlist_time = timeperiod
+        elif str(search_array.iloc[row]['timeperiod']) == '-30.0' or str(search_array.iloc[row]['timeperiod']) == '-30' :
+            timeperiod ='-30m'
+            span_value = '5m'
+            earlist_time = timeperiod
+        elif str(search_array.iloc[row]['timeperiod']) == '-60.0' or str(search_array.iloc[row]['timeperiod']) == '-60':
+            timeperiod ='-1h'
+            span_value = '5m'
+            earlist_time = timeperiod
+        elif str(search_array.iloc[row]['timeperiod']) == '-4.0' or str(search_array.iloc[row]['timeperiod']) == '-4' :
+            timeperiod ='-4h'
+            span_value = '15m'
+            earlist_time = timeperiod
+        elif str(search_array.iloc[row]['timeperiod']) == '-24.0' or str(search_array.iloc[row]['timeperiod']) == '-24' :
+            timeperiod ='-24h'
+            span_value = '15m'
+            earlist_time = timeperiod
+        trendName = search_array.iloc[row]['trends']
+        logger.info("earlist_time : {}".format(timeperiod))
+        logger.info("span_value : {}".format(span_value))
+        print("search_array.iloc[0]['trends']", trendName)
+        host_map = search_array.iloc[row]['host_mapping']
+        #print("host_map====",host_map)
+        host = path[host_map].values[0]
+        print("host===",host)
+        if (trendName == 'moovweb_valet_stats' ) :
+            #host = path['mw_eid'].values[0]
+            respOfGS = moovwebGoldenSignalsNew(trendName, host, search_array.iloc[row]['search_query'], span_value)
+            resultResponse.append(respOfGS)
+            continue
+        if pd.isnull(search_array.iloc[row]['graph_query']) :
+            #print("search_array.iloc[0]['search_query']", search_array.iloc[row]['search_query'])
+            is_graph_search = 'search'
+            search_value = search_array.iloc[row]['search_query']
+            #print("search_array.iloc[0]['graph_query']", search_array.iloc[row]['graph_query'])
+        else :
+            #print("search_array.iloc[0]['graph_query']", search_array.iloc[row]['graph_query'])
+            is_graph_search = 'graph'
+            search_value = search_array.iloc[row]['graph_query']
+        #print("search_value",search_value)
+        #search_q = str(search_value).format(request_host=host, span_time=span_value)
+        try :
+            #search_q = str(search_value).format(request_host=host, span_time=span_value)
+            search_q = str(search_value).replace("{request_host}",host)
+        except Exception as e:
+            logger.exception("Due to some issues with query not able to get the data from splunk: {} , error trace - {}".format(trendName,e))
+            dataPoints = {}
+            dataPoints['Number'] = incident
+            dataPoints['ERROR'] = "Due to some issues with query not able to get the data from splunk"
+            dataPoints['Splunk_trend_name'] = trendName
+            dataPoints['Splunk_query'] = search_q
+            #dataPoints['Splunk_results'] = data
+            dataPoints['earlist_time'] = earlist_time
+            dataPoints['latest_time'] = latest_time
+            dataPoints['Environment'] = CONFIG.ENV
+            splunkLog.append(dataPoints)
+            logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+            continue
+
+        #print("search_q===",search_q)
+        if 'sfcc' in trendName.lower():
+            try :
+                splukResult = sq.get_result_sfcc(timeperiod,search_q.replace('\n', ''))
+            except Exception as e:
+                logger.exception("Exception occurred while connecting to splunk : %s", str(e))
+                dataPoints = {}
+                dataPoints['ERROR'] = 'Exception occurred while connecting to splunk'
+                dataPoints['EXCEPTION'] = str(e)
+                dataPoints['Environment'] = CONFIG.ENV
+                splunkLog.append(dataPoints)
+                logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+        else :
+            logger.info("Splunk Qry : {}".format(search_q))
+            splukResult = sq.get_result(timeperiod,search_q.replace('\n', ''))
+        if is_graph_search == 'graph' :
+            newresult = designGraph(splukResult,trendName,incident,search_q)
+            if pd.notnull(search_array.iloc[row]['trend_query']) :
+                    
+                search_value = search_array.iloc[row]['trend_query']
+                try :
+                    search_q = str(search_value).replace("{request_host}",host)
+                except Exception as e:
+                    logger.exception("Due to some issues with query not able to get the data from splunk: {} , error trace - {}".format(trendName,e))
+                    continue
+
+                try :
+                    splukResult = sq.get_result_sfcc(timeperiod,search_q.replace('\n', ''))
+                except Exception as e:
+                    logger.exception("Exception occurred while connecting to splunk : %s", str(e))
+                data = []
+                if not splukResult :
+                    logger.info("Splunk result is empty ")
+                else :
+                    for item in splukResult:
+                        logger.info("INFO : {}".format(item))
+                        
+                        if 'INFO' in str(item) :
+                            logger.info("INFO : {}".format(item))
+                            continue
+                        data.append(item)
+                if (len(data) > 0):
+
+                    # Define spike detection parameters
+                    spike_threshold = 0  # Threshold to determine a spike
+                    # Initialize variables
+                    in_spike = False
+                    spike_start_time = None
+                    spike_end_time = None
+                    spikes = []
+                    spikeData = []
+                    # Iterate through the data
+                    #for i, (time_str, value) in enumerate(data):
+                    for dataRest in data :
+                        current_time = autoCloser.parse_time(dataRest['_time'])
+                        
+                        if int(dataRest['Trend']) > spike_threshold:
+                            if not in_spike:
+                                # Spike started
+                                in_spike = True
+                                spike_start_time = current_time
+                            # Update end time while still in spike
+                            spike_end_time = current_time
+                        else:
+                            if in_spike:
+                                # Spike ended
+                                in_spike = False
+                                spikes.append((spike_start_time, spike_end_time))
+                                spike_start_time = None
+                                spike_end_time = None
+                    # Check if there was an ongoing spike till the end of data
+                    if in_spike:
+                        spikes.append((spike_start_time, spike_end_time))
+
+                    # Output the results
+                    if spikes:
+                        for i, (start, end) in enumerate(spikes, start=1):
+                            print(f"Spike {i}: Start Time: {start}, End Time: {end}")
+                            spikeData.append("Spike "+str(i)+": Started at : "+str(start)+", Subsided at : "+str(end))
+                    else:
+                        spikeData.append("No spikes detected.")
+                        
+                    if trendName == "whoops_pages_trend_from_mw" or trendName == "whoops_page_trend" : 
+                        result['Issues Overview'] = result['Issues Overview']+["Whoops Page Spike Observations"]
+                    elif trendName == "cart_api_failure_trend" :
+                        result['Issues Overview'] = result['Issues Overview']+["Cart API Failure Trend Observations"]
+                    elif trendName == "moovweb_500_trend" :
+                        result['Issues Overview'] = result['Issues Overview']+["Moovweb 500 Trend Observations"]
+                    else :
+                        result['Issues Overview'] = result['Issues Overview']+["Spike Observations"]
+                    result['Analysis Details'] = result['Analysis Details']+[spikeData]
+
+        else :
+            data = []
+            titleArray = trendName.split('_')
+            title = ''
+            for titledata in titleArray :
+                title = title+" "+titledata
+            if not splukResult :
+                logger.info("Splunk result is empty ")
+            else :
+                for item in splukResult:
+                    logger.info("INFO : {}".format(item))
+                    if 'INFO' in str(item) :
+                    #if any("INFO" in string for string in item) :
+                        logger.info("INFO : {}".format(item))
+                        continue
+                    data.append(item)
+
+            logger.info("data length is: {}".format(len(data)))
+            logger.info("data  is: {}".format(data))
+
+            if (len(data) < 1):
+                logger.error("Getting the empty data from splunk : {}".format(trendName))
+                dataPoints = {}
+                dataPoints['Number'] = incident
+                dataPoints['ERROR'] = "Getting the empty data from splunk "
+                dataPoints['Splunk_trend_name'] = trendName
+                dataPoints['Splunk_query'] = search_q
+                dataPoints['Splunk_results'] = data
+                dataPoints['earlist_time'] = earlist_time
+                dataPoints['latest_time'] = latest_time
+                dataPoints['Environment'] = CONFIG.ENV
+                splunkLog.append(dataPoints)
+                #logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+                continue
+            try :
+                dynaFieldResult = getDynamicFieldsResult(data)
+
+                
+                if pd.notnull(search_array.iloc[row]['analysis_fields']) :
+                    for key, value in dynaFieldResult.items():
+                        if search_array.iloc[row]['analysis_fields'] == key :
+                            result['Issues Overview'] = result['Issues Overview']+[key]
+                            if len(value) > 5 :
+                                result['Analysis Details'] = result['Analysis Details']+[value[0:5]]
+                            else :
+                                result['Analysis Details'] = result['Analysis Details']+[value]
+                if trendName == 'top_clientips' :
+                    if pd.isnull(search_array.iloc[row]['dependent_query1']) :
+                        logger.info("No Dependency query")
+                    else :
+                        search_value = search_array.iloc[row]['dependent_query1']
+                        ipslistdt = ''
+                        n=0
+                        for dataRest in data :
+                            if n==0 :
+                                ipslistdt = dataRest["Impacted_Client_IPs"]
+                            else :
+                                ipslistdt = ipslistdt+","+dataRest["Impacted_Client_IPs"]
+                            n=n+1
+                        logger.info("IPs List : {}".format(ipslistdt))
+                        try :
+                            search_value = str(search_value).replace("{request_host}",host)
+                            search_q = str(search_value).replace("{client_ips}",ipslistdt)
+                        except Exception as e:
+                            logger.exception("Due to some issues with query not able to get the data from splunk: {} , error trace - {}".format(trendName,e))
+                            continue
+
+                        try :
+                            splukResult = sq.get_result_sfcc(timeperiod,search_q.replace('\n', ''))
+                        except Exception as e:
+                            logger.exception("Exception occurred while connecting to splunk : %s", str(e))
+                        data = []
+                        vendordata = []
+                        nonvendordata = []
+                        if not splukResult :
+                            logger.info("Splunk result is empty ")
+                        else :
+                            for item in splukResult:
+                                logger.info("INFO : {}".format(item))
+                                
+                                if 'INFO' in str(item) :
+                                    logger.info("INFO : {}".format(item))
+                                    continue
+                                data.append(item)
+                        for dataRest in data :
+                            logger.info("dataRest['vendor_traffic'] : {}".format(dataRest['vendor_traffic']))
+                            logger.info("dataRest['Client_IP'] : {}".format(dataRest['Client_IP']))
+                            if dataRest['vendor_traffic'] == "true" :
+                                vendordata.append(dataRest['Client_IP'])
+                            else :
+                                nonvendordata.append(dataRest['Client_IP'])
+
+                        summary_details = ''
+                        if pd.isnull(search_array.iloc[row]['dependent_query2']) :
+                            logger.info("No Dependency query")
+                            result['Issues Overview'] = result['Issues Overview']+["Conclusion(Optional)"]
+                            if len(vendordata) > 0 and len(nonvendordata) > 0 :
+                                result['Analysis Details'] = result['Analysis Details']+[str(nonvendordata)+" : These Ips are part of Vendor Ip, no need to take any action, "+str(vendordata)+" : These Ips are not part of Vendor Ip"]
+                            elif len(vendordata) > 0 and len(nonvendordata) == 0 :
+                                result['Analysis Details'] = result['Analysis Details']+[str(vendordata)+" : These Ips are part of Vendor Ip List, no need to take any action "]
+                            elif len(vendordata) == 0 and len(nonvendordata) > 0 :
+                                result['Analysis Details'] = result['Analysis Details']+[str(nonvendordata)+" : These Ips are not part of Vendor Ip List"]
+                        else :
+                            #result = self.dependentQueryData(timeperiod,search_array.iloc[row]['depedent_query'],host)
+                            search_value = search_array.iloc[row]['dependent_query2']
+                            logger.info("IPs List : {}".format(ipslistdt))
+                            try :
+                                search_value = str(search_value).replace("{request_host}",host)
+                                search_q = str(search_value).replace("{client_ips}",ipslistdt)
+                            except Exception as e:
+                                logger.exception("There is some issue with splunk query formation: {} , error trace - {}".format(trendName,e))
+                                continue
+                            try :
+                                splukResult = sq.get_result_sfcc(timeperiod,search_q.replace('\n', ''))
+                            except Exception as e:
+                                logger.exception("Exception occurred while connecting to splunk : %s", str(e))
+                            data = []
+                            knownBot = []
+                            unknownBot = []
+                            if not splukResult :
+                                logger.info("Splunk result is empty ")
+                            else :
+                                for item in splukResult:
+                                    logger.info("INFO : {}".format(item))
+                                    
+                                    if 'INFO' in str(item) :
+                                        logger.info("INFO : {}".format(item))
+                                        continue
+                                    data.append(item)
+                            for dataRest in data :
+                                logger.info("dataRest['Impacted_User_agent'] : {}".format(dataRest['Impacted_User_agent']))
+                                logger.info("dataRest['Client_IP'] : {}".format(dataRest['Client_IP']))
+                                if 'www.google.com' in dataRest['Impacted_User_agent'] :
+                                    knownBot.append(dataRest['Client_IP'])
+                                else :
+                                    unknownBot.append(dataRest['Client_IP'])
+                            result['Issues Overview'] = result['Issues Overview']+["Summary Analysis"]
+                            if len(vendordata) > 0 and len(nonvendordata) > 0 :
+                                summary_details = str(nonvendordata)+" : These Ips are part of Vendor Ip, no need to take any action, "+str(vendordata)+" : These Ips are not part of Vendor Ip , "
+                                #result['Analysis Details'] = result['Analysis Details']+[str(nonvendordata)+" : These Ips are part of Vendor Ip, no need to take any action, "+str(vendordata)+" : These Ips are not part of Vendor Ip\n "]
+                                if len(knownBot) > 0 and len(unknownBot) > 0 :
+                                    summary_details = summary_details + str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action, "+str(vendordata)+" : These Ips are unknown bot "
+                                    #result['Analysis Details'] = result['Analysis Details']+[str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action, "+str(vendordata)+" : These Ips are unknown bot "]
+                                elif len(knownBot) > 0 and len(unknownBot) == 0 :
+                                    summary_details = summary_details + str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action "
+                                    #result['Analysis Details'] = result['Analysis Details']+[str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action "]
+                                elif len(knownBot) == 0 and len(unknownBot) > 0 :
+                                    summary_details = summary_details + str(unknownBot)+" : These Ips are unknown bot\n"
+                                    #result['Analysis Details'] = result['Analysis Details']+[str(unknownBot)+" : These Ips are unknown bot\n"]
+                            elif len(vendordata) > 0 and len(nonvendordata) == 0 :
+                                summary_details = str(vendordata)+" : These Ips are part of Vendor Ip List, no need to take any action ,  "
+                                #result['Analysis Details'] = result['Analysis Details']+[str(vendordata)+" : These Ips are part of Vendor Ip List, no need to take any action\n "]
+                                if len(knownBot) > 0 and len(unknownBot) > 0 :
+                                    summary_details = summary_details + str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action, "+str(vendordata)+" : These Ips are unknown bot "
+                                    #result['Analysis Details'] = result['Analysis Details']+[str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action, "+str(vendordata)+" : These Ips are unknown bot "]
+                                elif len(knownBot) > 0 and len(unknownBot) == 0 :
+                                    summary_details = summary_details + str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action "
+                                    #result['Analysis Details'] = result['Analysis Details']+[str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action "]
+                                elif len(knownBot) == 0 and len(unknownBot) > 0 :
+                                    summary_details = summary_details + str(unknownBot)+" : These Ips are unknown bot\n"
+                            elif len(vendordata) == 0 and len(nonvendordata) > 0 :
+                                summary_details = str(nonvendordata)+" : These Ips are not part of Vendor Ip List , "
+                                #result['Analysis Details'] = result['Analysis Details']+[str(nonvendordata)+" : These Ips are not part of Vendor Ip List\n "]
+                                if len(knownBot) > 0 and len(unknownBot) > 0 :
+                                    summary_details = summary_details + str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action, "+str(vendordata)+" : These Ips are unknown bot "
+                                    #result['Analysis Details'] = result['Analysis Details']+[str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action, "+str(vendordata)+" : These Ips are unknown bot "]
+                                elif len(knownBot) > 0 and len(unknownBot) == 0 :
+                                    summary_details = summary_details + str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action "
+                                    #result['Analysis Details'] = result['Analysis Details']+[str(knownBot)+" : These Ips are part of known Bot(Google), no need to take any action "]
+                                elif len(knownBot) == 0 and len(unknownBot) > 0 :
+                                    summary_details = summary_details + str(unknownBot)+" : These Ips are unknown bot\n"
+                            result['Analysis Details'] = result['Analysis Details']+[summary_details]
+
+                
+                logger.info("data length is: {}".format(len(data)))
+                logger.info("data  is: {}".format(data))
+                logger.info("data  in Result dict : {}".format(result))
+            except Exception as e:
+                logger.exception("Due to some Technical issue not able to get the data from splunk on alert: {} , error trace - {}".format(trendName,e))
+                dataPoints = {}
+                dataPoints['Number'] = incident
+                dataPoints['ERROR'] = "Due to some Technical issue not able to get the data from splunk on alert"
+                dataPoints['Splunk_trend_name'] = trendName
+                dataPoints['Splunk_query'] = search_q
+                dataPoints['Splunk_results'] = data
+                dataPoints['earlist_time'] = earlist_time
+                dataPoints['latest_time'] = latest_time
+                dataPoints['Environment'] = CONFIG.ENV
+                splunkLog.append(dataPoints)
+                logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+                continue
+
+            newresult = matplotTable(dynaFieldResult,trendName,title)
+            
+        logger.info("newresult : {}".format(newresult))
+        if newresult != None :
+            #resultResponse.append(newresult)
+            try :
+                uploadImagesToServiceNow(newresult,incident,sysId)
+            except Exception as e:
+                logger.exception("Exception occurred while connecting to service now to upload an attachment: %s", str(e))
+    #sysId = sericenow.readServiceNowData()[0]['sys_id']
+    #logger.info("Images list : {}".format(resultResponse))
+    time.sleep(10)
+    '''for imageRes in resultResponse :
+        #print("imageRes",imageRes)
+        logger.info("Images Res : {}".format(imageRes))
+        fileName = imageRes.split('/')
+        #print(fileName[2])
+        try :
+            #os.path.join(os.getcwd(), "static/Image/"+fileName+".png")
+            #sericenow.uploadAttachments(sysId,'/Users/mani.gummalla/Desktop/static'+imageRes,fileName[2])
+            sericenow.uploadAttachments(sysId,os.path.join(os.getcwd(), "static/Image/"+fileName[2]),fileName[2])
+            time.sleep(5)
+        except Exception as e:
+            dataPoints = {}
+            dataPoints['Number'] = incident
+            dataPoints['ERROR'] = "Exception occurred while connecting to service now to upload an attachment"
+            dataPoints['EXCEPTION'] = str(e)
+            dataPoints['Environment'] = CONFIG.ENV
+            splunkLog.append(dataPoints)
+            logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+            logger.exception("Exception occurred while connecting to service now to upload an attachment: %s", str(e))
+        finally:
+            os.remove(os.path.join(os.getcwd(), "static/Image/"+fileName[2]))'''
+    
+    logger.info("data  in Result dict : {}".format(result))
+    if is_auto_analysis == 'true' :
+        newresult1 = matplotTable(result,analysisFileName,analysisTitle)
+        uploadImagesToServiceNow(newresult1,incident,sysId)
+    
+        table = pd.DataFrame(result)
+        resultStng = 'Please find the SRE Ops Bot Analysis :\n \n '
+        initial =0
+        for index, row in table.iterrows():
+            resultStng = resultStng + str(row['Issues Overview'])+"\t       : "+str(row['Analysis Details'])+"\n "
+            #initial = initial + 1
+        serviceNowNotes = {}
+        serviceNowNotes['work_notes'] = resultStng
+        if is_autoCloser == 'true' :
+            serviceNowNotes['state'] = 'Resolved'
+        json_string = json.dumps(serviceNowNotes)
+        logging.info(json_string)
+        sericenow.updateServiceNowData(sysId,json_string)
+    temp = 1
+    worknotes = ''
+    logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+    sq.pushLogsToSplunkIndex(json.dumps(splunkLog))
+    time.sleep(10)
+    return
+    '''worknotes = ''
+    for count in summaryPoints:
+        worknotes = worknotes + "{}. {}  ".format(temp, count)
+        temp = temp + 1'''
+    #sericenow.updateServiceNowData(sysId,worknotes)
+    #return resultResponse,summaryPoints,sericenow.updateServiceNowData(sysId,worknotes)
+
+def graph_search(splunkData, time, query, span_value):
+        trend = splunkData['trend_name']
+        platform = splunkData['platform']
+        path = splunkData['path']
+        search_array = utils.getSplunkQuery(platform, trend)
+        search_query = search_array[query]
+        search_value = search_query.values[0]
+        print("search_value",search_value)
+        if query=='single_graph':
+            search_q = str(search_value).format(request_host=path, span_time=span_value, url =splunkData['url'])
+        else:
+            search_q = str(search_value).format(request_host=path, span_time=span_value)
+            print("search_q",search_q)
+        if trend == 'sfcc_valet_stats' or trend =='sfcc_apiwise_valet' or trend == 'sfcc_overall_errorcodes' or trend == 'sfcc_errorcodes_trend' or trend == 'sfcc_apiwise_succ_vs_failure' :
+            return sq.get_result_sfcc(time,search_q.replace('\n', ''))
+        else :
+            return sq.get_result(time,search_q.replace('\n', ''))
+
+def moovwebGoldenSignalsNew(trend, host, search_value, span_value):
+    timefrm = '-15m|-30m|-1h'
+    timeperiod = timefrm.split('|')
+    fileName = trend
+    result = {}
+    TimeFrame = []
+    SuccessPercent = []
+    fourxx_Fail_percent = []
+    fivexx_Fail_percent = []
+    RespTime = []
+    siteName = ''
+
+    if fileName == 'sfcc_valet_stats' :
+        siteName = 'SFCC'
+        title = siteName+" : Golden Signals Stats"
+    else :
+        siteName = 'MoovWeb'
+        title = siteName+" : Golden Signals Stats"
+    for tmprd in timeperiod:
+        #splukResult = graph_search(splunkData, tmprd, splunk_query, span_value)
+        search_q = str(search_value).format(request_host=host, span_time=span_value)
+        print("search_q",search_q)
+        if 'sfcc' in trend:
+            splukResult = sq.get_result_sfcc(tmprd,search_q.replace('\n', ''))
+        else :
+            splukResult = sq.get_result(tmprd,search_q.replace('\n', ''))
+        #splukResult = sq.get_result(tmprd,search_q.replace('\n', ''))
+        data = []
+        for item in splukResult:
+            data.append(item)
+        print("data length is:", len(data))
+        print("data  is:", data)
+        SuccessPercent.append(data[0]['SuccessPercent'])
+        fourxx_Fail_percent.append(data[0]['4XX_Fail_percent'])
+        fivexx_Fail_percent.append(data[0]['5XX_Fail_percent'])
+        RespTime.append(data[0]['AvgRespTime'])
+        print('timefrm',timefrm)
+        if tmprd == '-15m' :
+            TimeFrame.append('Last 15 mins')
+            result['TimeFrame'] = TimeFrame
+        elif tmprd == '-30m' :
+            TimeFrame.append('Last 30 mins')
+            result['TimeFrame'] = TimeFrame
+        elif tmprd == '-1h' :
+            TimeFrame.append('Last 60 mins')
+            result['TimeFrame'] = TimeFrame
+        print("SuccessPercent",SuccessPercent)
+    result['SuccessPercent'] = SuccessPercent
+    print("result",result)
+    result['4XX_Fail_percent'] = fourxx_Fail_percent
+    result['5XX_Fail_percent'] = fivexx_Fail_percent
+    result['AvgRespTime'] = RespTime
+    return matplotTable(result,fileName,title)
+
+def matplotTable(tableResult,fileName,title):
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    matplotlib.pyplot.switch_backend('Agg')
+    #load data into a DataFrame object:
+    table = pd.DataFrame(tableResult)
+
+    print("table",table)
+    plt.figure()
+    #plt.subplot(121)
+    cell_text = []
+    for row in range(len(table)):
+        cell_text.append(table.iloc[row])
+    fig, ax1 = plt.subplots()
+    ax1.autoscale(enable=True)
+    ax1.axis('off')
+    tab0 = ax1.table(cellText=table.values, colLabels=table.columns, loc='center', cellLoc='left')
+    #table = plt.table(cellText=cell_text,cellLoc='center', rowLoc='center', colLabels=table.columns, loc='center')
+    tab0.scale(1, 2)
+    tab0.auto_set_column_width(col=list(range(len(table.columns))))
+    tab0.auto_set_font_size(False)
+    #plt.axis('off')
+    #ax1.axis('off')
+    graph_path = os.path.join(os.getcwd(), "static/Image/"+fileName+".png")
+    ax1.set_title(f'{title}', weight='bold', size=10, color='k')
+    print("graph_path", graph_path)
+    #os.system("rm -rf {}".format(graph_path))
+    # Remove the file if it already exists
+    if os.path.exists(graph_path):
+        os.remove(graph_path)
+    plt.savefig(graph_path, dpi=100, bbox_inches='tight')
+    plt.close()
+    del plt
+    return "/Image/"+fileName+".png"
+
+def designGraph(splukResult,fileName,incident,search_q) :
+        #fileName = data['trend_name']
+        data = []
+        data.clear()
+        '''for item in result:
+            data.append(item)'''
+
+        if not splukResult :
+                logger.info("Splunk result is empty ")
+        else :
+            for item in splukResult:
+                logger.info("INFO : {}".format(item))
+                if 'INFO' in str(item) :
+                    logger.info("INFO : {}".format(item))
+                    continue
+                data.append(item)
+
+        logger.info("data length is: {}".format(len(data)))
+        logger.info("data  is: {}".format(data))
+
+        if (len(data) < 1):
+            logger.error("Getting the empty data from splunk : {}".format(fileName))
+            dataPoints = {}
+            dataPoints['Number'] = incident
+            dataPoints['ERROR'] = "Getting the empty data from splunk"
+            dataPoints['Splunk_trend_name'] = fileName
+            dataPoints['Splunk_query'] = search_q
+            dataPoints['Splunk_results'] = data
+            dataPoints['Environment'] = CONFIG.ENV
+            splunkLog.append(dataPoints)
+            return
+
+        print("data length is:", len(data))
+        print("data  is:", data)
+        #return data
+        '''if (len(data)==0) :
+            data['_time'] = datetime.datetime.now()
+            data[data['trend_name']] =0'''
+        paths = list(data[1].keys())[:-1]
+        print("Paths",paths)
+        sdata = {}
+        for path in paths:
+            sdata.update({path: []})
+
+        for row in data:
+            for path in paths:
+                if path == "_time":
+                    sdata[path].append(str(row[path]).split('T')[1].split('.')[0][:-3])
+                else:
+                    sdata[path].append(float(row[path]))
+        print("before - sdata",sdata)
+        timeslots = sdata.pop('_time')
+        print("timeslots", timeslots)
+        print("sdata = ",sdata)
+        import matplotlib.pylab as plt
+        matplotlib.pyplot.switch_backend('Agg')
+        matplotlib.rcParams['text.usetex'] = False
+        #plt.clf()
+        for uri in sdata:
+            plt.bar(timeslots, sdata[uri], label=str(uri))
+        # Ensuring the entire range is shown
+        #plt.xlim(data.index[0], data.index[-1])
+        plt.xlabel("Time")
+        plt.ylabel('')
+        plt.legend()
+        plt.title('')
+        plt.tight_layout()
+        figure = plt.gcf()
+        figure.set_size_inches(10, 8)
+        graph_path = os.path.join(os.getcwd(), "static/Image/"+fileName+".png")
+        print("graph_path",graph_path)
+        os.system("rm -rf {}".format(graph_path))
+        plt.title(f'{fileName}', weight='bold', size=10, color='k')
+        plt.savefig(graph_path, dpi=100, bbox_inches='tight')
+        print("graph_path",graph_path)
+        plt.close()
+        del plt
+        #plt.close
+        return "/Image/"+fileName+".png"
+
+def getDynamicFieldsResult(data) :
+    i = 0
+    result = {}
+    for dt in data :
+        if(i == 0):
+            result = dict.fromkeys(dt.keys(), [])
+            print("Initial Dict Data",result)
+        i = i + 1
+        for dicKey in result:
+            #print("dictkey value", dicKey)
+            for key in dt.keys():
+                #print("key", key)
+                #print("dict key value", result[key])
+
+                if dicKey == key:
+                    #print("keys====", d[key])
+                    result[dicKey] = result[dicKey]+[dt[key]]
+                    #print("Test======internal", result)
+                    break
+            #print("Data in dict", result)
+    print("Final result",result)
+    return result
+
+def uploadImagesToServiceNow(imageRes,incident,sysId) :
+
+    logger.info("Images Res : {}".format(imageRes))
+    fileName = imageRes.split('/')
+    #print(fileName[2])
+    try :
+        #os.path.join(os.getcwd(), "static/Image/"+fileName+".png")
+        #sericenow.uploadAttachments(sysId,'/Users/mani.gummalla/Desktop/static'+imageRes,fileName[2])
+        sericenow.uploadAttachments(sysId,os.path.join(os.getcwd(), "static/Image/"+fileName[2]),fileName[2])
+        time.sleep(5)
+    except Exception as e:
+        dataPoints = {}
+        dataPoints['Number'] = incident
+        dataPoints['ERROR'] = "Exception occurred while connecting to service now to upload an attachment"
+        dataPoints['EXCEPTION'] = str(e)
+        dataPoints['Environment'] = CONFIG.ENV
+        splunkLog.append(dataPoints)
+        logger.info("splunkLog : {}".format(json.dumps(splunkLog, indent=2)))
+        logger.exception("Exception occurred while connecting to service now to upload an attachment: %s", str(e))
+    finally:
+        os.remove(os.path.join(os.getcwd(), "static/Image/"+fileName[2]))
+
+def createServiceNowIncident() :
+
+    summaryPoints.clear()
+    '''path = utils.getRequestPath(call_type)
+    is_graph_search = 'search'
+    print("New Path",path)'''
+    serviceNowNotes = {}
+    worknotes = {}
+    queryData = utils.getSplunkQueryToCreateServiceNow()
+    print("Data from Sheet",queryData)
+
+    for row in range(len(queryData))  :
+        search_q = queryData.iloc[row]['search_query']
+        timeperiod = queryData.iloc[row]['timeperiod']
+        trendName = queryData.iloc[row]['platforms']
+        subcategory = queryData.iloc[row]['host']
+        short_description = queryData.iloc[row]['short_description']
+        assignment_group = queryData.iloc[row]['assignment_group']
+        wrknotes = queryData.iloc[row]['worknotes']
+        priority = queryData.iloc[row]['priority']
+        serviceNowNotes['state'] = 'Acknowledged'
+        serviceNowNotes['short_description'] = short_description
+        serviceNowNotes['assignment_group'] = assignment_group
+        serviceNowNotes['subcategory'] = subcategory
+        serviceNowNotes['priority'] = priority
+        worknotes['work_notes'] = wrknotes
+        worknotes['state'] = 'Resolved'
+        json_string = json.dumps(serviceNowNotes)
+        print(json_string)
+        worknoteJson = json.dumps(worknotes)
+        print("SplunkQuery",search_q)
+
+        if 'sfcc' in trendName:
+            splukResult = sq.get_result_sfcc(timeperiod,search_q.replace('\n', ''))
+        else :
+            splukResult = sq.get_result(timeperiod,search_q.replace('\n', ''))
+        data = []
+        for item in splukResult:
+            data.append(item)
+
+        print("data length is:", len(data))
+        print("data  is:", data)
+        sericenow.createServiceNowData(json_string)
+        return worknoteJson
+        '''if len(data) >= 2 :
+            print("data  is:", data[1])
+            sericenow.createServiceNowData(json_string)
+            return worknoteJson'''
