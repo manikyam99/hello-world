@@ -1,0 +1,109 @@
+import requests
+import json,logging
+from .utils import Utils
+from config import DefaultConfig
+
+utils = Utils()
+CONFIG = DefaultConfig()
+logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(levelname)s - %(message)s')
+
+class ServiceNowOperations():
+
+    '''def buildUrl(instanceName, api, table, query, limit):
+	    url = 'https://' + instanceName + '.service-now.com' + api + table + "?" + "sysparm_query=" + query + "&sysparm_limit=" + limit
+        return url'''
+    
+    def __init__(self):
+        self._servicenow_uname = CONFIG.SERVICENOW_USERNAME
+        self._servicenow_pwd = CONFIG.SERVICENOW_PWD
+        self._servicenow_upload_url = CONFIG.SERVICENOW_UPLOAD_URL
+        self._servicenow_get_update_url = CONFIG.SERVICENOW_GET_OR_UPDATE_URL
+        self._servicenow_auth_token = CONFIG.SERVICENOW_AUTH_TOKEN
+        self._servicenow_inc_descp = CONFIG.SERVICENOW_INC_DESCP
+        self._servicenow_get_queryparam = CONFIG.SERVICENOW_GET_QUERYPARAM
+
+    def readServiceNowData(self):
+        #incidentDescp = 'Test alert for automation'
+        limit =5
+        sysparm_limit = "&sysparm_limit=" + str(limit)
+        url = self._servicenow_get_update_url+'?sysparm_query=short_description='+self._servicenow_inc_descp
+        logging.info("url : {}".format(url))
+        # Set proper headers
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        #print(url + " " + self._servicenow_uname + " " + self._servicenow_pwd)
+        # Do the HTTP request
+        response = requests.get(url, headers={'Authorization': self._servicenow_auth_token})
+        if response.status_code != 200:
+            print('Status:', response.status_code, 'Headers:', response.headers, 'Error Response:', response.json())
+            exit()
+        responseJSON = response.json()['result']
+        return responseJSON
+    
+    def readServiceNowDataByGroup(self):
+        incidentDescp = 'Test alert for automation'
+        limit =5
+        sysparm_limit = "&sysparm_limit=" + str(limit)
+        url = self._servicenow_get_update_url+'?'+self._servicenow_get_queryparam
+        logging.info("url : {}".format(url))
+        # Set proper headers
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        #print(url + " " + self._servicenow_uname + " " + self._servicenow_pwd)
+        # Do the HTTP request
+        response = requests.get(url, headers={'Authorization': self._servicenow_auth_token})
+        if response.status_code != 200:
+            print('Status:', response.status_code, 'Headers:', response.headers, 'Error Response:', response.json())
+            exit()
+        responseJSON = response.json()['result']
+        return responseJSON
+
+    def updateServiceNowData(self,sysid,worknotes):
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        url = self._servicenow_get_update_url+'/'+sysid
+        logging.info("url : {}".format(url))
+        # Do the HTTP request
+        #response = requests.patch(url, headers={'Authorization': self._servicenow_auth_token},data="{\"work_notes\":\""+worknotes+"\"}")
+        response = requests.patch(url, headers={'Authorization': self._servicenow_auth_token},data=worknotes)
+        # Check for HTTP codes other than 200
+        if response.status_code == 200:
+            return response.status_code
+            print('Status:', response.status_code, 'Headers:', response.headers, 'Error Response:', response.json())
+            #exit()
+        responseJSON = response.json()['result']
+        print(responseJSON)
+
+    def createServiceNowData(self,data):
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        url = self._servicenow_get_update_url
+        logging.info("url : {}".format(url))
+        # Do the HTTP request
+        response = requests.post(url, headers={'Authorization': self._servicenow_auth_token},data=data)
+        # Check for HTTP codes other than 200
+        if response.status_code == 200:
+            return response.status_code
+            print('Status:', response.status_code, 'Headers:', response.headers, 'Error Response:', response.json())
+            exit()
+        responseJSON = response.json()['result']
+        print(responseJSON)
+
+    def uploadAttachments(self,sysid,filePath,fileName):
+        # specify files to send as binary
+        filed = open(filePath, 'rb')
+        data = filed.read()
+        
+        # Set proper headers
+        headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'image/png',
+            'Authorization': self._servicenow_auth_token}
+        url = self._servicenow_upload_url+sysid+'&file_name='+fileName
+        logging.info("url : {}".format(url))
+        response = requests.post(url, headers=headers,data=data)
+        filed.close()
+        # Check for HTTP codes other than 200
+        if response.status_code == 200:
+            print('Status:', response.status_code, 'Headers:', response.headers, 'Error Response:', response.json())
+            exit()
+        responseJSON = response.json()['result']
+        print("Upload Response :",responseJSON)
+        #filed.close()
+        #return responseJSON
