@@ -1,0 +1,9 @@
+requests==2.31.0
+splunk-sdk
+Flask-Scheduler
+splunklib
+matplotlib
+pandas
+flask
+gunicorn
+edgegrid-python
